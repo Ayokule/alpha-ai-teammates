@@ -64,8 +64,7 @@ export function DepartmentDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <Form {...form}>
-          <form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-4">
+        <Form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-4">
             <FormField
               control={form.control}
               name="name"
@@ -108,7 +107,6 @@ export function DepartmentDialog({
                 {isEditing ? "Save Changes" : "Add Department"}
               </Button>
             </DialogFooter>
-          </form>
         </Form>
       </DialogContent>
     </Dialog>

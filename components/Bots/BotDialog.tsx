@@ -10,25 +10,18 @@ import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Button } from "@/components/ui/button"
 import { ColorPicker } from "@/components/ui/color-picker"
-import { Bot, BotRole, Department, BotToolConfig } from "@/types"
-
-const toolConfigSchema = z.object({
-  toolkit: z.string(),
-  composio_connection_id: z.string().optional(),
-  is_active: z.boolean().default(true),
-})
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { Department, Bot, BotRole } from "@/types"
+import { cn } from "@/lib/utils"
 
 const botSchema = z.object({
   name: z.string().min(1, "Name is required").max(50, "Name must be 50 characters or less"),
-  role: z.enum(["head", "lead", "worker"], { required_error: "Role is required" }),
+  role: z.enum(["head", "lead", "worker"]),
   department_id: z.string().min(1, "Department is required"),
   avatar_color: z.string().regex(/^#[0-9A-Fa-f]{6}$/, "Invalid color format"),
-  instructions: z.string().optional(),
-  tool_configs: z.array(z.object({
-    toolkit: z.string(),
-    composio_connection_id: z.string().optional(),
-    is_active: z.boolean().default(true),
-  })).optional(),
+  instructions: z.string().max(2000, "Instructions must be 2000 characters or less"),
+  monthly_budget_usd: z.number().min(0).max(10000).optional(),
+  budget_alert_threshold: z.number().min(0).max(1).optional(),
 })
 
 type BotFormData = z.infer<typeof botSchema>
@@ -37,9 +30,7 @@ interface BotDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onSubmit: (data: BotFormData) => Promise<void>
-  workspaceId: string
   departments: Department[]
-  availableToolkits: { toolkit: string; connection_id: string }[]
   bot?: Bot | null
   isEditing: boolean
 }
@@ -50,175 +41,238 @@ const defaultValues: BotFormData = {
   department_id: "",
   avatar_color: "#6366F1",
   instructions: "",
-  tool_configs: [],
+  monthly_budget_usd: 0,
+  budget_alert_threshold: 0.8,
 }
 
 export function BotDialog({
   open,
   onOpenChange,
   onSubmit,
-  workspaceId,
   departments,
-  availableToolkits,
   bot,
   isEditing,
 }: BotDialogProps) {
   const form = useForm<BotFormData>({
-    resolver: zodResolver(botSchema) as any,
-    defaultValues: bot ? {
-      name: bot.name,
-      role: bot.role,
-      department_id: bot.department_id || "",
-      avatar_color: bot.avatar_color,
-      instructions: bot.instructions || "",
-      tool_configs: bot.tool_configs?.map(tc => ({
-        toolkit: tc.toolkit,
-        composio_connection_id: tc.composio_connection_id || "",
-        is_active: tc.is_active ?? true,
-      })) || [],
-    } : defaultValues,
+    resolver: zodResolver(botSchema),
+    defaultValues: bot
+      ? {
+          name: bot.name,
+          role: bot.role,
+          department_id: bot.department_id || "",
+          avatar_color: bot.avatar_color,
+          instructions: bot.instructions,
+          monthly_budget_usd: bot.monthly_budget_usd,
+          budget_alert_threshold: bot.budget_alert_threshold,
+        }
+      : defaultValues,
   })
 
-  const handleFormSubmit = (data: BotFormData) => {
+  const handleSubmit = (data: BotFormData) => {
     onSubmit(data)
     onOpenChange(false)
   }
 
-  const isHead = bot?.role === "head" || (!isEditing && form.watch("role") === "head")
-  const isLead = form.watch("role") === "lead"
+  const sortedDepts = departments
+    .slice()
+    .sort((a, b) => a.display_order - b.display_order)
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{isEditing ? "Edit Bot" : "Add Bot"}</DialogTitle>
           <DialogDescription>
             {isEditing
-              ? "Update the bot configuration"
-              : "Create a new bot for your workspace"}
+              ? "Update the bot's configuration"
+              : "Create a new bot for your team"}
           </DialogDescription>
         </DialogHeader>
 
-        <form onSubmit={form.handleSubmit(handleFormSubmit)} className="space-y-6">
-          <div className="space-y-2">
-            <label className="block text-sm font-medium">Bot Name</label>
-            <Input
-              placeholder="e.g., Research Bot"
-              {...form.register("name")}
+        <Form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-4">
+            {/* Name */}
+            <FormField
+              control={form.control}
+              name="name"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Bot Name</FormLabel>
+                  <FormControl>
+                    <Input placeholder="e.g., Research Bot" {...field} />
+                  </FormControl>
+                  <FormDescription>
+                    Give this bot a memorable name
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
             />
-            {form.formState.errors.name && (
-              <p className="text-sm text-destructive">{form.formState.errors.name.message}</p>
-            )}
-          </div>
 
-          <div className="space-y-2">
-            <label className="block text-sm font-medium">Role</label>
-            <Select onValueChange={(v) => form.setValue("role", v as any)} defaultValue={form.watch("role")}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select role" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="worker">Worker - Executes assigned tasks</SelectItem>
-                <SelectItem value="lead">Lead - Manages workers & assigns tasks</SelectItem>
-                <SelectItem value="head">Head - Plans work for entire team (one per workspace)</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="space-y-2">
-            <label className="block text-sm font-medium">Department (Floor)</label>
-            <Select onValueChange={(v) => form.setValue("department_id", v)} defaultValue={form.watch("department_id")} disabled={form.watch("role") === "head"}>
-              <SelectTrigger>
-                <SelectValue placeholder={form.watch("role") === "head" ? "Head bot is on the top floor" : "Select department"} />
-              </SelectTrigger>
-              <SelectContent>
-                {departments.map((dept) => (
-                  <SelectItem key={dept.id} value={dept.id}>
-                    {dept.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="space-y-2">
-            <label className="block text-sm font-medium">Avatar Color</label>
-            <ColorPicker value={form.watch("avatar_color")} onChange={(v) => form.setValue("avatar_color", v)} />
-          </div>
-
-          <div className="space-y-2">
-            <label className="block text-sm font-medium">Instructions</label>
-            <Textarea
-              placeholder="Enter custom instructions for this bot..."
-              className="min-h-[120px]"
-              {...form.register("instructions")}
+            {/* Role */}
+            <FormField
+              control={form.control}
+              name="role"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Role</FormLabel>
+                  <Select onValueChange={field.onChange} defaultValue={field.value}>
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select role" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value="lead">Lead — Can assign tasks to workers</SelectItem>
+                      <SelectItem value="worker">Worker — Executes assigned tasks</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <FormDescription>
+                    Leads can delegate tasks to workers on any floor. Workers execute tasks.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
             />
-          </div>
 
-          {/* Tool Access Configuration */}
-          <div className="space-y-2">
-            <label className="block text-sm font-medium">Tool Access</label>
-            <div className="space-y-3">
-              {availableToolkits.map((toolkit) => {
-                const toolConfigs = form.watch("tool_configs") || []
-                const currentConfig = toolConfigs.find(tc => tc.toolkit === toolkit.toolkit)
-                const isConnected = !!toolkit.connection_id
-                const isActive = currentConfig?.is_active ?? false
-                return (
-                  <div key={toolkit.toolkit} className="flex items-center justify-between p-3 border border-border rounded-lg bg-background">
-                    <div className="flex items-center gap-3">
-                      <input
-                        type="checkbox"
-                        checked={isActive}
-                        onChange={(e) => {
-                          const current = form.watch("tool_configs") || []
-                          if (e.target.checked) {
-                            form.setValue("tool_configs", [
-                              ...current.filter(tc => tc.toolkit !== toolkit.toolkit),
-                              { toolkit: toolkit.toolkit, composio_connection_id: toolkit.connection_id || "", is_active: true }
-                            ])
-                          } else {
-                            form.setValue("tool_configs", current.filter(tc => tc.toolkit !== toolkit.toolkit))
-                          }
-                        }}
-                        className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
+            {/* Department */}
+            <FormField
+              control={form.control}
+              name="department_id"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Department (Floor)</FormLabel>
+                  <Select onValueChange={field.onChange} defaultValue={field.value}>
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select department" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {sortedDepts.map((dept) => (
+                        <SelectItem key={dept.id} value={dept.id}>
+                          {dept.name} (Floor {dept.display_order})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormDescription>
+                    The floor this bot will work on
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            {/* Avatar Color */}
+            <FormField
+              control={form.control}
+              name="avatar_color"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Avatar Color</FormLabel>
+                  <FormControl>
+                    <ColorPicker {...field} />
+                  </FormControl>
+                  <FormDescription>
+                    Color for the bot's avatar in the 3D office
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            {/* Instructions */}
+            <FormField
+              control={form.control}
+              name="instructions"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>System Instructions</FormLabel>
+                  <FormControl>
+                    <Textarea
+                      placeholder="Enter the bot's system prompt / instructions..."
+                      className="min-h-[120px]"
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    Define this bot's role, capabilities, and behavior. This becomes the system prompt.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            {/* Budget Settings */}
+            <div className="grid grid-cols-2 gap-4">
+              <FormField
+                control={form.control}
+                name="monthly_budget_usd"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Monthly Budget (USD)</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        max="10000"
+                        placeholder="0 = inherit from workspace"
+                        {...field}
                       />
-                      <div>
-                        <p className="font-medium">{toolkit.toolkit}</p>
-                        <p className="text-sm text-muted-foreground">
-                          {!!toolkit.connection_id ? "Connected" : "Not connected - click to connect"}
-                        </p>
-                      </div>
-                    </div>
-                    {!toolkit.connection_id && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          alert(`Connect ${toolkit.toolkit} via Composio OAuth`)
-                        }}
-                      >
-                        Connect
-                      </Button>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          </div>
+                    </FormControl>
+                    <FormDescription>
+                      0 means inherit from workspace budget
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
 
-          <div className="flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2 pt-4">
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button type="submit">
-              {isEditing ? "Save Changes" : "Add Bot"}
-            </Button>
-          </div>
-        </form>
+              <FormField
+                control={form.control}
+                name="budget_alert_threshold"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Alert Threshold</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="number"
+                        step="0.05"
+                        min="0"
+                        max="1"
+                        placeholder="0.8 = 80%"
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      Alert when budget reaches this percentage
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            {/* Head bot warning */}
+            {bot?.is_head_immutable && (
+              <Alert variant="default" className="border-blue-200 bg-blue-50">
+                <span className="text-sm text-blue-800">
+                  This is the Head Bot and cannot be deleted, demoted, or moved to another floor.
+                </span>
+              </Alert>
+            )}
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={form.formState.isSubmitting}>
+                {isEditing ? "Save Changes" : "Add Bot"}
+              </Button>
+            </DialogFooter>
+        </Form>
       </DialogContent>
     </Dialog>
   )
 }
-

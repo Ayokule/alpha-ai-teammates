@@ -1,16 +1,15 @@
 "use client"
 
 import { useState } from "react"
+import { useRouter } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { CheckCircle2, AlertCircle, Loader2, Eye, EyeOff } from "lucide-react"
-import { cn } from "@/lib/utils"
 
 export default function LoginPage() {
   const [email, setEmail] = useState("")
@@ -21,8 +20,8 @@ export default function LoginPage() {
   const [success, setSuccess] = useState("")
   const [showPassword, setShowPassword] = useState(false)
   const [isSignUp, setIsSignUp] = useState(false)
-  const [activeTab, setActiveTab] = useState("signin")
 
+  const router = useRouter()
   const supabase = createClient()
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -40,24 +39,61 @@ export default function LoginPage() {
           throw new Error("Password must be at least 8 characters")
         }
 
-        const { error } = await supabase.auth.signUp({
+        const { data: authData, error: signUpError } = await supabase.auth.signUp({
           email,
           password,
           options: {
-            emailRedirectTo: `${window.location.origin}/auth/callback`
+            emailRedirectTo: `${window.location.origin}/auth/callback`,
+            data: {
+              full_name: email.split('@')[0], // Use email prefix as default name
+            }
           }
         })
-        if (error) throw error
-        setSuccess("Check your email for confirmation link")
+        if (signUpError) throw signUpError
+
+        // If email confirmation is not required (instant sign-in), create workspace immediately
+        if (authData.user && !authData.session) {
+          // Email confirmation required - user will be created after confirmation
+          setSuccess("Check your email for confirmation link")
+        } else if (authData.user && authData.session) {
+          // Auto-confirmed or email confirmation disabled - create workspace now
+          await createWorkspaceForUser(authData.user.id)
+          router.push("/dashboard")
+        } else {
+          setSuccess("Account created! Please check your email.")
+        }
       } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password })
-        if (error) throw error
-        window.location.href = "/dashboard"
+        const { error: signInError } = await supabase.auth.signInWithPassword({ email, password })
+        if (signInError) throw signInError
+        router.push("/dashboard")
       }
-    } catch (err: any) {
-      setError(err.message)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "An error occurred")
     } finally {
       setLoading(false)
+    }
+  }
+
+  const createWorkspaceForUser = async (userId: string) => {
+    try {
+      const response = await fetch(`${window.location.origin}/api/workspaces`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: "My Workspace",
+          icon: "🏢",
+          free_llmapi_url: process.env.NEXT_PUBLIC_FREE_LLMAPI_URL || "http://localhost:5173/v1",
+          free_llmapi_key: process.env.NEXT_PUBLIC_FREE_LLMAPI_KEY || "",
+        })
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        console.error('Failed to create workspace:', errorData)
+        // Don't throw - user can create workspace later from dashboard
+      }
+    } catch {
+      // Don't throw - user can create workspace later from dashboard
     }
   }
 
@@ -71,8 +107,8 @@ export default function LoginPage() {
         }
       })
       if (error) throw error
-    } catch (err: any) {
-      setError(err.message)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "OAuth sign in failed")
       setLoading(false)
     }
   }
@@ -236,7 +272,7 @@ export default function LoginPage() {
             </form>
 
             <p className="text-center text-sm text-muted-foreground mt-6">
-              {isSignUp ? "Already have an account? " : "Don't have an account? "}
+              {isSignUp ? "Already have an account? " : "Don&apos;t have an account? "}
               <button
                 type="button"
                 onClick={() => {
