@@ -53,9 +53,10 @@ export async function POST(request: NextRequest) {
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
 
-    if (!user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
-    }
+    // Allow service role key for cron jobs
+    const authHeader = request.headers.get("authorization")
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+    const isCronJob = authHeader === `Bearer ${serviceRoleKey}`
 
     const body = await request.json()
     const { workspaceId, periodStart, periodEnd } = body
@@ -64,16 +65,22 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "workspaceId is required" }, { status: 400 })
     }
 
-    // Verify workspace access
-    const { data: membership } = await supabase
-      .from("workspace_members")
-      .select("workspace_id")
-      .eq("workspace_id", workspaceId)
-      .eq("user_id", user.id)
-      .single()
+    if (!user && !isCronJob) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    }
 
-    if (!membership) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 })
+    // Verify workspace access (skip for cron jobs)
+    if (!isCronJob) {
+      const { data: membership } = await supabase
+        .from("workspace_members")
+        .select("workspace_id")
+        .eq("workspace_id", workspaceId)
+        .eq("user_id", user!.id)
+        .single()
+
+      if (!membership) {
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 })
+      }
     }
 
     const start = periodStart ? new Date(periodStart) : new Date(Date.now() - 24 * 60 * 60 * 1000)
