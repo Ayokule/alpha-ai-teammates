@@ -40,7 +40,12 @@ export default function AcceptInvitationPage() {
             expires_at
           `)
           .eq("token", token)
-          .single()
+          .single<{
+            email: string
+            role: string
+            workspace: { name: string } | { name: string }[] | null
+            expires_at: string
+          }>()
 
         if (inviteError || !invitation) {
           setStatus("error")
@@ -57,7 +62,7 @@ export default function AcceptInvitationPage() {
 
         setInvitationDetails({
           email: invitation.email,
-          workspace_name: invitation.workspace?.name,
+          workspace_name: Array.isArray(invitation.workspace) ? invitation.workspace[0]?.name : invitation.workspace?.name,
           role: invitation.role,
         })
 
@@ -86,7 +91,7 @@ export default function AcceptInvitationPage() {
         }
 
         setStatus("success")
-        setMessage(`Welcome to ${invitation.workspace?.name}!`)
+        setMessage(`Welcome to ${Array.isArray(invitation.workspace) ? invitation.workspace[0]?.name : invitation.workspace?.name}!`)
 
       } catch (err) {
         console.error("Accept invitation error:", err)
